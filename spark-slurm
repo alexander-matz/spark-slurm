@@ -1,0 +1,55 @@
+#!/bin/bash
+
+set -e
+
+die() {
+  echo "error: $@" >&2
+  exit 1
+}
+
+if [[ $SPARK_HOME == "" ]]; then
+  die "\$SPARK_HOME not set, aborting"
+fi
+
+if [[ $JAVA_HOME == "" ]]; then
+  die "\$JAVA_HOME not set, aborting"
+fi
+
+if [[ $SLURM_JOB_ID == "" ]]; then
+  die "no slurm job allocation, aborting"
+fi
+
+# rerun script wrapped in srun if necessary
+if [[ $SLURM_SRUN_COMM_HOST == '' ]]; then
+  this_contents=$(cat $0)
+  srun bash -c "$this_contents"
+else
+  source $SPARK_HOME/conf/spark-env.sh
+  source $SPARK_HOME/bin/load-spark-env.sh
+
+  export SPARK_WORKER_DIR=~/.spark/worker
+  export SPARK_LOG_DIR=~/.spark/logs
+  export SPARK_LOCAL_DIRS=/tmp/spark
+
+  export SPARK_MASTER_PORT=7077
+  export SPARK_MASTER_WEBUI_PORT=8080
+  if [[ $SLURM_CPUS_PER_TASK != '' && $SLURM_MEM_PER_CPU != '' ]]; then
+    export SPARK_WORKER_CORES=$SLURM_CPUS_PER_TASK
+    export SPARK_DAEMON_MEMORY=$(( SLURM_MEM_PER_CPU * SLURM_CPUS_PER_TASK / 2 ))
+    export SPARK_MEM=$SPARK_DAEMON_MEMORY
+  fi
+
+  if [[ $SLURM_PROCID -eq 0 ]]; then
+    export SPARK_MASTER_HOST=$(hostname)
+    echo "starting master:  spark://$SPARK_MASTER_HOST:$SPARK_MASTER_PORT"
+    "$SPARK_HOME/bin/spark-class" org.apache.spark.deploy.master.Master \
+      --ip $SPARK_MASTER_HOST
+      --port $SPARK_MASTER_PORT
+      --webui-port $SPARK_MASTER_WEBUI_PORT
+  else
+    echo "starting worker"
+    SPARK_MASTER_HOST=$(scontrol show hostname $SLURM_NODELIST | head -n 1)
+    "$SPARK_HOME/bin/spark-class" org.apache.spark.deploy.worker.Worker \
+      spark://${SPARK_MASTER_HOST}:${SPARK_MASTER_PORT}
+  fi
+fi
